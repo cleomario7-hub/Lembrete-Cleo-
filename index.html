@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Minha Agenda</title>
+<style>
+:root{--bg:#f5f6fa;--card:#fff;--tx:#1d2330;--mut:#6b7385;--pri:#3b5bdb;--ok:#2f9e44;--bad:#e03131;--bd:#e3e6ee}
+@media(prefers-color-scheme:dark){:root{--bg:#12151c;--card:#1b2030;--tx:#e8ebf3;--mut:#9aa3b8;--pri:#7b93ff;--bd:#2b3248}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,sans-serif;padding-bottom:90px}
+header{padding:16px;font-size:22px;font-weight:700}
+.tabs{display:flex;gap:8px;padding:0 16px 8px}
+.tabs button{flex:1;padding:10px;border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:10px;font-size:15px}
+.tabs button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+main{padding:8px 16px;max-width:640px;margin:auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px;margin:10px 0}
+.card.past{opacity:.55}
+.row{display:flex;align-items:center;gap:8px}
+.grow{flex:1}
+.title{font-weight:600}
+.when{color:var(--mut);font-size:14px}
+.badge{font-size:12px;background:var(--pri);color:#fff;border-radius:99px;padding:2px 8px}
+.todo{display:flex;gap:8px;align-items:center;padding:4px 0}
+.todo.done span{text-decoration:line-through;color:var(--mut)}
+input,select,textarea{width:100%;padding:10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit;margin:4px 0}
+input[type=checkbox]{width:22px;height:22px;margin:0}
+label{font-size:13px;color:var(--mut)}
+.btn{padding:10px 14px;border:0;border-radius:10px;background:var(--pri);color:#fff;font-size:15px}
+.btn.sec{background:var(--bd);color:var(--tx)}
+.btn.bad{background:var(--bad)}
+.icon{background:none;border:0;color:var(--mut);font-size:18px;padding:4px 8px}
+.fab{position:fixed;right:18px;bottom:18px;width:60px;height:60px;border-radius:50%;border:0;background:var(--pri);color:#fff;font-size:32px;box-shadow:0 4px 14px #0004}
+.overlay{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:16px;z-index:10}
+.overlay.show{display:flex}
+.modal{background:var(--card);border-radius:16px;padding:18px;width:100%;max-width:440px;max-height:92vh;overflow:auto}
+.ring{text-align:center}
+.ring h2{font-size:26px;margin:8px 0}
+.ring .big{font-size:48px}
+.banner{background:#fff3bf;color:#5c4a00;border-radius:10px;padding:10px;margin:8px 0;font-size:14px}
+.empty{text-align:center;color:var(--mut);padding:30px 0}
+.sub{margin-top:6px;padding-top:6px;border-top:1px dashed var(--bd)}
+@keyframes pulse{50%{transform:scale(1.15)}}
+.ring .big{animation:pulse 1s infinite}
+</style>
+</head>
+<body>
+<header>📅 Minha Agenda</header>
+<div class="tabs">
+  <button id="tabE" class="on">Compromissos</button>
+  <button id="tabT">Fazeres</button>
+</div>
+<main>
+  <div id="banner"></div>
+  <div id="list"></div>
+</main>
+<button class="fab" id="fab" aria-label="Adicionar">+</button>
+
+<!-- Formulário -->
+<div class="overlay" id="formOv"><div class="modal" id="form"></div></div>
+<!-- Alarme -->
+<div class="overlay" id="ringOv"><div class="modal ring" id="ring"></div></div>
+
+<script>
+(function(){
+const KEY='agenda_v1';
+let S;
+try{S=JSON.parse(localStorage.getItem(KEY))}catch(e){}
+if(!S||!S.events)S={events:[],tasks:[]};
+S.seq=S.seq||0;
+let tab='E';
+let syncing=Promise.resolve();
+const $=id=>document.getElementById(id);
+const persist=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}};
+const save=()=>{persist();sync()};
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+const pad=n=>String(n).padStart(2,'0');
+const today=()=>{const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())};
+const startOf=e=>new Date(e.date+'T'+e.time).getTime();
+const alarmAt=e=>e.snooze||(startOf(e)-(e.lead||0)*60000);
+const DIAS=['dom','seg','ter','qua','qui','sex','sáb'];
+function fmtDate(e){
+  const d=new Date(e.date+'T'+e.time);
+  const t=new Date();t.setHours(0,0,0,0);
+  const diff=Math.round((new Date(e.date+'T00:00')-t)/864e5);
+  const rel=diff===0?'Hoje':diff===1?'Amanhã':diff===-1?'Ontem':DIAS[d.getDay()]+', '+pad(d.getDate())+'/'+pad(d.getMonth()+1);
+  return rel+' às '+e.time;
+}
+function el(tag,attrs,...kids){
+  const n=document.createElement(tag);
+  for(const k in(attrs||{})){
+    if(k==='class')n.className=attrs[k];
+    else if(k.startsWith('on'))n.addEventListener(k.slice(2),attrs[k]);
+    else n[k]=attrs[k];
+  }
+  kids.flat().forEach(c=>n.append(c));
+  return n;
+}
+
+/* ---------- Alarmes nativos (Android via Capacitor) ---------- */
+const LN=(window.Capacitor&&Capacitor.isNativePlatform&&Capacitor.isNativePlatform())?Capacitor.Plugins.LocalNotifications:null;
+async function initNative(){
+  if(!LN)return;
+  try{await LN.createChannel({id:'alarme',name:'Alarmes da agenda',description:'Avisos de compromissos',importance:5,visibility:1,vibration:true,lights:true})}catch(e){}
+  try{const p=await LN.checkPermissions();if(p.display!=='granted')await LN.requestPermissions()}catch(e){}
+  try{const x=await LN.checkExactNotificationSetting();if(x.exact_alarm==='denied'){alert('Para os alarmes tocarem na hora certa, ative "Alarmes e lembretes" para este app na próxima tela.');await LN.changeExactNotificationSetting()}}catch(e){}
+  try{LN.addListener('localNotificationActionPerformed',()=>check())}catch(e){}
+  sync();
+}
+function sync(){
+  if(!LN)return;
+  syncing=syncing.then(async()=>{
+    try{
+      const pend=await LN.getPending();
+      if(pend.notifications.length)await LN.cancel({notifications:pend.notifications.map(n=>({id:n.id}))});
+      const now=Date.now(),list=[];
+      S.events.forEach(e=>{
+        if(!e.alarm||e.ack||e.done)return;
+        if(!e.nid){e.nid=++S.seq;persist()}
+        const base=alarmAt(e);
+        const pendT=(e.todos||[]).filter(t=>!t.done).map(t=>'• '+t.t).join('\n');
+        for(let k=0;k<4;k++){ // toca na hora e repete a cada minuto por 3 min
+          const at=base+k*60000;
+          if(at<=now+1500)continue;
+          list.push({id:e.nid*10+k,title:'⏰ '+e.title,
+            body:(k?'Lembrete: ':'')+fmtDate(e)+(pendT?'\n'+pendT:''),
+            channelId:'alarme',schedule:{at:new Date(at),allowWhileIdle:true}});
+        }
+      });
+      if(list.length)await LN.schedule({notifications:list});
+    }catch(e){console.log('sync falhou',e)}
+  });
+}
+
+/* ---------- Render ---------- */
+function render(){
+  $('tabE').classList.toggle('on',tab==='E');
+  $('tabT').classList.toggle('on',tab==='T');
+  const box=$('list');box.textContent='';
+  if(tab==='E'){
+    const evs=[...S.events].sort((a,b)=>startOf(a)-startOf(b));
+    if(!evs.length)box.append(el('div',{class:'empty'},'Nenhum compromisso. Toque no + para criar.'));
+    const now=Date.now();
+    evs.forEach(e=>{
+      const past=startOf(e)<now-36e5||e.done;
+      const c=el('div',{class:'card'+(past?' past':'')});
+      const head=el('div',{class:'row'},
+        el('input',{type:'checkbox',checked:!!e.done,onchange:ev=>{e.done=ev.target.checked;save();render()}}),
+        el('div',{class:'grow',onclick:()=>openForm(e)},
+          el('div',{class:'title'},e.title),
+          el('div',{class:'when'},fmtDate(e)+(e.alarm?' ⏰':''))),
+        el('button',{class:'icon',onclick:()=>{if(confirm('Apagar "'+e.title+'"?')){S.events=S.events.filter(x=>x!==e);save();render()}}},'🗑')
+      );
+      c.append(head);
+      if(e.notes)c.append(el('div',{class:'when sub'},e.notes));
+      if(e.todos&&e.todos.length){
+        const w=el('div',{class:'sub'});
+        e.todos.forEach(t=>w.append(el('label',{class:'todo'+(t.done?' done':'')},
+          el('input',{type:'checkbox',checked:!!t.done,onchange:ev=>{t.done=ev.target.checked;save();render()}}),
+          el('span',{},t.t))));
+        c.append(w);
+      }
+      box.append(c);
+    });
+  }else{
+    const ts=[...S.tasks].sort((a,b)=>(a.done?1:0)-(b.done?1:0));
+    if(!ts.length)box.append(el('div',{class:'empty'},'Nenhum fazer. Toque no + para adicionar.'));
+    ts.forEach(t=>box.append(el('div',{class:'card'+(t.done?' past':'')},
+      el('div',{class:'row'},
+        el('input',{type:'checkbox',checked:!!t.done,onchange:ev=>{t.done=ev.target.checked;save();render()}}),
+        el('div',{class:'grow title'+(t.done?'':''),style:t.done?'text-decoration:line-through':''},t.t),
+        el('button',{class:'icon',onclick:()=>{S.tasks=S.tasks.filter(x=>x!==t);save();render()}},'🗑')))));
+    if(S.tasks.some(t=>t.done))box.append(el('button',{class:'btn sec',onclick:()=>{S.tasks=S.tasks.filter(t=>!t.done);save();render()}},'Limpar concluídos'));
+  }
+  // backup
+  const b=el('div',{class:'row',style:'margin-top:24px;justify-content:center'},
+    el('button',{class:'btn sec',onclick:exportData},'Exportar backup'),
+    el('button',{class:'btn sec',onclick:importData},'Importar'));
+  box.append(b);
+  renderBanner();
+}
+function renderBanner(){
+  const b=$('banner');b.textContent='';
+  const need=[];
+  if(LN)return;
+  if(!audioOK)need.push('toque aqui para ativar o som do alarme');
+  if('Notification' in window&&Notification.permission==='default')need.push('permita notificações');
+  if(need.length){
+    const d=el('div',{class:'banner',onclick:enable},'⚠️ Para os alarmes funcionarem: '+need.join(' e ')+'. Mantenha esta página aberta.');
+    b.append(d);
+  }
+}
+
+/* ---------- Formulário ---------- */
+function openForm(e){
+  if(tab==='T'&&!e)return openTaskForm();
+  const isNew=!e;
+  const d=e?JSON.parse(JSON.stringify(e)):{id:uid(),title:'',date:today(),time:'09:00',notes:'',alarm:true,lead:0,todos:[]};
+  const f=$('form');f.textContent='';
+  const title=el('input',{placeholder:'Título (ex.: Consulta médica)',value:d.title});
+  const date=el('input',{type:'date',value:d.date});
+  const time=el('input',{type:'time',value:d.time});
+  const notes=el('textarea',{rows:2,placeholder:'Observações',value:d.notes||''});
+  const alarm=el('input',{type:'checkbox',checked:d.alarm});
+  const lead=el('select');
+  [[0,'Na hora'],[5,'5 min antes'],[15,'15 min antes'],[30,'30 min antes'],[60,'1 hora antes'],[1440,'1 dia antes']]
+    .forEach(([v,l])=>lead.append(el('option',{value:v,selected:v==d.lead},l)));
+  const tl=el('div');
+  function drawTodos(){
+    tl.textContent='';
+    d.todos.forEach((t,i)=>tl.append(el('div',{class:'row'},
+      el('input',{type:'checkbox',checked:!!t.done,onchange:ev=>t.done=ev.target.checked}),
+      el('input',{value:t.t,oninput:ev=>t.t=ev.target.value}),
+      el('button',{class:'icon',onclick:()=>{d.todos.splice(i,1);drawTodos()}},'✕'))));
+  }
+  drawTodos();
+  f.append(
+    el('h3',{},isNew?'Novo compromisso':'Editar compromisso'),
+    el('label',{},'Título'),title,
+    el('div',{class:'row'},
+      el('div',{class:'grow'},el('label',{},'Data'),date),
+      el('div',{class:'grow'},el('label',{},'Horário'),time)),
+    el('label',{},'Observações'),notes,
+    el('label',{class:'row',style:'margin:8px 0'},alarm,el('span',{style:'font-size:16px;color:var(--tx)'},'⏰ Tocar alarme')),
+    el('label',{},'Avisar'),lead,
+    el('label',{style:'display:block;margin-top:10px'},'Fazeres deste compromisso'),tl,
+    el('button',{class:'btn sec',onclick:()=>{d.todos.push({t:'',done:false});drawTodos();const i=tl.querySelectorAll('input:not([type=checkbox])');i[i.length-1].focus()}},'+ Adicionar fazer'),
+    el('div',{class:'row',style:'margin-top:16px'},
+      el('button',{class:'btn sec grow',onclick:()=>$('formOv').classList.remove('show')},'Cancelar'),
+      el('button',{class:'btn grow',onclick:()=>{
+        if(!title.value.trim()||!date.value||!time.value){alert('Preencha título, data e horário.');return}
+        d.title=title.value.trim();d.date=date.value;d.time=time.value;d.notes=notes.value.trim();
+        d.alarm=alarm.checked;d.lead=+lead.value;
+        d.todos=d.todos.filter(t=>t.t.trim());
+        d.ack=false;d.snooze=null;d.nid=d.nid||++S.seq;
+        if(isNew)S.events.push(d);else S.events[S.events.indexOf(e)]=d;
+        save();$('formOv').classList.remove('show');render();check();
+      }},'Salvar')));
+  $('formOv').classList.add('show');
+  if(isNew)title.focus();
+}
+function openTaskForm(){
+  const f=$('form');f.textContent='';
+  const t=el('input',{placeholder:'O que você precisa fazer?'});
+  const go=()=>{if(!t.value.trim())return;S.tasks.push({id:uid(),t:t.value.trim(),done:false});save();$('formOv').classList.remove('show');render()};
+  t.addEventListener('keydown',ev=>{if(ev.key==='Enter')go()});
+  f.append(el('h3',{},'Novo fazer'),t,
+    el('div',{class:'row',style:'margin-top:12px'},
+      el('button',{class:'btn sec grow',onclick:()=>$('formOv').classList.remove('show')},'Cancelar'),
+      el('button',{class:'btn grow',onclick:go},'Adicionar')));
+  $('formOv').classList.add('show');t.focus();
+}
+
+/* ---------- Alarme ---------- */
+let audioOK=false,ctx=null,beepTimer=null,ringing=null;
+function enable(){
+  try{
+    ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();
+    ctx.resume();audioOK=true;
+    beep(0.15);
+  }catch(e){}
+  if('Notification' in window&&Notification.permission==='default')Notification.requestPermission().then(renderBanner);
+  renderBanner();
+}
+document.addEventListener('click',()=>{if(!audioOK)enable()},{once:true});
+function beep(len){
+  if(!ctx)return;
+  const o=ctx.createOscillator(),g=ctx.createGain();
+  o.type='square';o.frequency.value=880;g.gain.value=.25;
+  o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+len);
+}
+function startSound(){
+  stopSound();
+  let n=0;
+  beepTimer=setInterval(()=>{
+    beep(.18);setTimeout(()=>beep(.18),260);
+    if(navigator.vibrate)navigator.vibrate([300,150,300]);
+    if(++n>120)stopSound();
+  },1000);
+}
+function stopSound(){clearInterval(beepTimer);beepTimer=null;if(navigator.vibrate)navigator.vibrate(0)}
+function ringFor(e){
+  ringing=e;
+  const r=$('ring');r.textContent='';
+  r.append(el('div',{class:'big'},'⏰'),
+    el('h2',{},e.title),
+    el('div',{class:'when'},fmtDate(e)));
+  if(e.notes)r.append(el('p',{},e.notes));
+  const pend=(e.todos||[]).filter(t=>!t.done);
+  if(pend.length){const w=el('div',{style:'text-align:left;margin:8px 0'},el('b',{},'Fazeres pendentes:'));pend.forEach(t=>w.append(el('div',{},'• '+t.t)));r.append(w)}
+  r.append(el('div',{class:'row',style:'margin-top:14px'},
+    el('button',{class:'btn sec grow',onclick:()=>{e.snooze=Date.now()+5*60000;close()}},'Soneca 5 min'),
+    el('button',{class:'btn grow',onclick:()=>{e.ack=true;e.snooze=null;close()}},'OK, entendi')));
+  $('ringOv').classList.add('show');
+  startSound();
+  try{if('Notification' in window&&Notification.permission==='granted')new Notification('⏰ '+e.title,{body:fmtDate(e),requireInteraction:true})}catch(x){}
+  document.title='⏰ '+e.title;
+}
+function close(){ringing=null;stopSound();$('ringOv').classList.remove('show');document.title='Minha Agenda';save();render();setTimeout(check,300)}
+function check(){
+  if(ringing)return;
+  const now=Date.now();
+  const due=S.events.filter(e=>e.alarm&&!e.ack&&!e.done&&now>=alarmAt(e)&&now<startOf(e)+864e5)
+    .sort((a,b)=>alarmAt(a)-alarmAt(b));
+  if(due.length)ringFor(due[0]);
+}
+setInterval(check,10000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)check()});
+
+/* ---------- Backup ---------- */
+function exportData(){
+  const a=el('a',{href:URL.createObjectURL(new Blob([JSON.stringify(S)],{type:'application/json'})),download:'agenda-backup-'+today()+'.json'});
+  document.body.append(a);a.click();a.remove();
+}
+function importData(){
+  const i=el('input',{type:'file',accept:'.json',onchange:()=>{
+    const r=new FileReader();
+    r.onload=()=>{try{const d=JSON.parse(r.result);if(d.events&&d.tasks){S=d;save();render();alert('Backup importado.')}else throw 0}catch(e){alert('Arquivo inválido.')}};
+    r.readAsText(i.files[0]);
+  }});
+  i.click();
+}
+
+$('tabE').onclick=()=>{tab='E';render()};
+$('tabT').onclick=()=>{tab='T';render()};
+$('fab').onclick=()=>openForm();
+$('formOv').addEventListener('click',ev=>{if(ev.target.id==='formOv')ev.target.classList.remove('show')});
+render();check();initNative();
+})();
+</script>
+</body>
+</html>

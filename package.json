@@ -2,6 +2,9 @@
   "name": "minha-agenda",
   "version": "1.0.0",
   "private": true,
+  "scripts": {
+    "postinstall": "mkdir -p $HOME/.android && cp debug.keystore $HOME/.android/debug.keystore"
+  },
   "dependencies": {
     "@capacitor/android": "^6.2.0",
     "@capacitor/core": "^6.2.0",

@@ -122,6 +122,7 @@ const pad=n=>String(n).padStart(2,'0');
 const ymd=d=>d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
 const today=()=>ymd(new Date());
 const addDays=(s,n)=>{const d=new Date(s+'T12:00');d.setDate(d.getDate()+n);return ymd(d)};
+const addMonths=(s,dom)=>{const [y,m]=s.split('-').map(Number);const last=new Date(y,m+1,0).getDate();const d=new Date(y,m,Math.min(dom,new Date(y,m+1,0).getDate()),12);return ymd(d)};
 const startOf=e=>new Date(e.date+'T'+e.time).getTime();
 const alarmAt=e=>e.snooze||(startOf(e)-(e.lead||0)*60000);
 const DIAS=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
@@ -212,11 +213,12 @@ function rollAll(){
   S.events.forEach(e=>{
     if(!e.repeat)return;
     const step=e.repeat==='weekly'?7:1;
+    const dom=e.dom||+e.date.slice(8,10);
     const finished=(e.ack||e.done)&&startOf(e)<=now;
     const stale=startOf(e)<now-864e5;
     if(finished||stale){
       let g=0;
-      while(startOf(e)<=now&&g++<800)e.date=addDays(e.date,step);
+      while(startOf(e)<=now&&g++<800)e.date=e.repeat==='monthly'?addMonths(e.date,dom):addDays(e.date,step);
       e.ack=false;e.done=false;e.snooze=null;(e.todos||[]).forEach(t=>t.done=false);ch=true;
     }
   });
@@ -291,7 +293,7 @@ function eventCard(e){
       el('div',{class:'meta'},
         el('span',{},'🕘 '+e.time),
         e.alarm?el('span',{},'⏰'+(e.lead?' '+(e.lead>=1440?'1 dia antes':e.lead>=60?(e.lead/60)+'h antes':e.lead+' min antes'):'')):null,
-        e.repeat?el('span',{},e.repeat==='daily'?'🔁 todo dia':'🔁 toda semana'):null,
+        e.repeat?el('span',{},e.repeat==='daily'?'🔁 todo dia':e.repeat==='monthly'?'🔁 todo mês':'🔁 toda semana'):null,
         nt.length?el('span',{},'☑️ '+nd+'/'+nt.length):null,
         late?el('span',{class:'late'},'atrasado'):null)),
     el('button',{class:'ic',onclick:()=>{if(confirm('Apagar "'+e.title+'"?')){S.events=S.events.filter(x=>x!==e);save();render()}}},'🗑')));
@@ -442,7 +444,7 @@ function openForm(e){
   [[0,'Na hora'],[5,'5 min antes'],[15,'15 min antes'],[30,'30 min antes'],[60,'1 hora antes'],[1440,'1 dia antes']]
     .forEach(([v,l])=>lead.append(el('option',{value:v,selected:v==d.lead},l)));
   const rep=el('select');
-  [['','Não repete'],['daily','Todo dia'],['weekly','Toda semana']]
+  [['','Não repete'],['daily','Todo dia'],['weekly','Toda semana'],['monthly','Todo mês']]
     .forEach(([v,l])=>rep.append(el('option',{value:v,selected:v===(d.repeat||'')},l)));
   const cats=el('div',{class:'cats'});
   const drawCats=()=>{cats.textContent='';CATS.forEach(c=>cats.append(el('button',{class:'cat'+(d.cat===c.e?' on':''),style:'--c:'+c.c,onclick:()=>{d.cat=c.e;drawCats()}},c.e+' '+c.n)))};
@@ -475,7 +477,7 @@ function openForm(e){
       el('button',{class:'btn grow',onclick:()=>{
         if(!title.value.trim()||!date.value||!time.value){toast('Preencha título, data e horário');return}
         d.title=title.value.trim();d.date=date.value;d.time=time.value;d.notes=notes.value.trim();
-        d.alarm=alarm.checked;d.lead=+lead.value;d.repeat=rep.value;
+        d.alarm=alarm.checked;d.lead=+lead.value;d.repeat=rep.value;d.dom=+d.date.slice(8,10);
         d.todos=d.todos.filter(t=>t.t.trim());
         d.ack=false;d.snooze=null;d.done=false;d.nid=d.nid||++S.seq;
         if(isNew)S.events.push(d);else S.events[S.events.indexOf(e)]=d;
